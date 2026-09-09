@@ -1,82 +1,76 @@
+# 어제의 박스오피스 — KOBIS 일별 박스오피스 API(선생님 결과)
 import datetime
-import requests
+
 import pandas as pd
-import pytz
+import plotly.express as px
+import requests
 import streamlit as st
 
-# -----------------------------------------------------------------------------
-# 1. 페이지 기본 설정 및 제목 표시
-# -----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="어제 박스오피스 순위",
-    page_icon="🎬",
-    layout="wide"
-)
+st.set_page_config(page_title="어제의 박스오피스", page_icon="🎬", layout="wide")
 
-st.title("🎬 어제의 박스오피스 순위")
+# 인증키는 비밀 금고(secrets)에서 불러온다 — 코드에 직접 쓰지 않는다
+API_KEY = st.secrets["KOBIS_KEY"]
+URL = "https://www.kobis.or.kr/kobisopenapi/webservice/rest/boxoffice/searchDailyBoxOfficeList.json"
 
-# -----------------------------------------------------------------------------
-# 2. 날짜 계산 (한국 표준시 KST 기준 '어제')
-# -----------------------------------------------------------------------------
-# 배포 서버의 시계(UTC 등)와 관계없이 한국 시간(Asia/Seoul)을 기준으로 가져옵니다.
-kst = pytz.timezone('Asia/Seoul')
-now_kst = datetime.datetime.now(kst)
-yesterday_kst = now_kst - datetime.timedelta(days=1)
-target_dt = yesterday_kst.strftime("%Y%m%d")
+# '어제'를 한국 시간 기준으로 계산한다 (배포 서버의 시계는 한국 시간이 아니다)
+KST = datetime.timezone(datetime.timedelta(hours=9))
+yesterday = datetime.datetime.now(KST).date() - datetime.timedelta(days=1)
+target_dt = yesterday.strftime("%Y%m%d")
 
-st.caption(f"기준 일자: {yesterday_kst.strftime('%Y년 %m월 %d일')} (한국 시간 기준 자동 계산)")
 
-# -----------------------------------------------------------------------------
-# 3. KOBIS API 데이터 호출 함수 (캐싱 적용)
-# -----------------------------------------------------------------------------
-# ttl=3600: 같은 날짜 데이터 요청 시 1시간(3600초) 동안 API를 재호출하지 않고 캐시된 데이터를 사용합니다.
-@st.cache_data(ttl=3600)
-def fetch_box_office_data(api_key, date_str):
-    url = "https://www.kobis.or.kr/kobisopenapi/webservice/rest/boxoffice/searchDailyBoxOfficeList.json"
-    params = {
-        "key": api_key,
-        "targetDt": date_str
-    }
-    
-    try:
-        # API 서버에 데이터 요청
-        response = requests.get(url, params=params, timeout=10)
-        
-        # HTTP 응답 코드가 200이 아니면 예외 발생
-        if response.status_code != 200:
-            return None, f"서버 응답 오류 (상태 코드: {response.status_code})"
-            
-        data = response.json()
-        
-        # 1) KOBIS 특이사항: 키가 잘못되어도 200 응답과 함께 faultInfo 상자가 들어옴
-        if "faultInfo" in data:
-            error_msg = data["faultInfo"].get("message", "알 수 없는 API 오류가 발생했습니다.")
-            return None, f"KOBIS 오류 메시지: {error_msg}"
-            
-        # 2) 정상 응답 내 박스오피스 목록 추출
-        box_office_result = data.get("boxOfficeResult", {})
-        daily_list = box_office_result.get("dailyBoxOfficeList", [])
-        
-        # 3) 데이터 목록이 비어있는 경우
-        if not daily_list:
-            return None, "영화 목록 데이터가 비어 있습니다."
-            
-        return daily_list, None
+@st.cache_data(ttl=3600)  # 같은 날짜는 한 시간 동안 기억해 두고 API를 다시 부르지 않는다
+def fetch_boxoffice(date_str):
+    """KOBIS API에서 해당 날짜의 일별 박스오피스를 받아 온다."""
+    params = {"key": API_KEY, "targetDt": date_str}
+    res = requests.get(URL, params=params, timeout=10)
+    res.raise_for_status()
+    return res.json()
 
-    except requests.exceptions.RequestException as e:
-        # 네트워크 차단, 연결 실패 등의 경우 처리
-        return None, f"네트워크 통신 오류가 발생했습니다: {str(e)}"
 
-# -----------------------------------------------------------------------------
-# 4. Secrets에서 API 키 불러오기 및 예외 처리
-# -----------------------------------------------------------------------------
-if "KOBIS_KEY" not in st.secrets:
-    st.error("🔑 API 키를 찾을 수 없습니다.")
-    st.info("""
-    **확인 방법:**
-    1. Streamlit Cloud 앱 설정(Settings) -> **Secrets** 메뉴로 이동하세요.
-    2. 아래 형식으로 KOBIS 인증키를 입력하고 저장했는지 확인하세요:
-    ```toml
-    KOBIS_KEY = "발급받은_인증키_입력"
-    """)
+st.title("🎬 어제의 박스오피스")
+st.caption(f"조회 날짜: {yesterday} (한국 시간 기준 어제)")
+
+try:
+    data = fetch_boxoffice(target_dt)
+except requests.RequestException:
+    st.error("서버에 연결하지 못했습니다. 인터넷 연결을 확인하고 잠시 뒤 새로고침해 주세요.")
     st.stop()
+
+# 인증키가 틀리면 상태코드는 200이지만 faultInfo 상자가 온다
+if "faultInfo" in data:
+    st.error(f"API가 오류를 돌려주었습니다: {data['faultInfo'].get('message', '')}")
+    st.info("비밀 금고(secrets)의 KOBIS_KEY 값이 올바른지 확인해 주세요.")
+    st.stop()
+
+movies = data.get("boxOfficeResult", {}).get("dailyBoxOfficeList", [])
+
+# 영화 목록이 비어서 오면 — 아직 집계 전인 날짜다
+if not movies:
+    st.warning("영화 목록이 비어 있습니다. 아직 집계 전인 날짜는 아닌지 확인해 주세요.")
+    st.stop()
+
+df = pd.DataFrame(movies)
+
+# 숫자가 글자로 오므로 숫자로 바꿔야 정렬과 그래프에 쓸 수 있다
+for col in ["rank", "audiCnt", "audiAcc", "scrnCnt"]:
+    df[col] = pd.to_numeric(df[col])
+
+# 1위 영화는 지표 카드 세 장으로 크게
+top = df.sort_values("rank").iloc[0]
+st.subheader(f"🥇 1위 — {top['movieNm']}")
+c1, c2, c3 = st.columns(3)
+c1.metric("어제 관객수", f"{top['audiCnt']:,}명")
+c2.metric("누적 관객수", f"{top['audiAcc']:,}명")
+c3.metric("스크린수", f"{top['scrnCnt']:,}개")
+
+# 전체 순위표
+st.subheader("📋 어제의 순위표")
+table = df.sort_values("rank")[["rank", "movieNm", "openDt", "audiCnt", "audiAcc", "scrnCnt"]]
+table.columns = ["순위", "영화명", "개봉일", "관객수", "누적관객", "스크린수"]
+st.dataframe(table, hide_index=True, width="stretch")
+
+# 관객수 상위 5편은 막대그래프로
+st.subheader("📊 관객수 상위 5편")
+top5 = df.sort_values("audiCnt", ascending=False).head(5)
+fig = px.bar(top5, x="movieNm", y="audiCnt", labels={"movieNm": "영화명", "audiCnt": "어제 관객수"})
+st.plotly_chart(fig, width="stretch")
