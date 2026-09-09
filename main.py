@@ -72,9 +72,11 @@ def fetch_box_office_data(api_key, date_str):
 # -----------------------------------------------------------------------------
 if "KOBIS_KEY" not in st.secrets:
     st.error("🔑 API 키를 찾을 수 없습니다.")
-    st.info(""""
+    st.info("""
     **확인 방법:**
     1. Streamlit Cloud 앱 설정(Settings) -> **Secrets** 메뉴로 이동하세요.
     2. 아래 형식으로 KOBIS 인증키를 입력하고 저장했는지 확인하세요:
     ```toml
     KOBIS_KEY = "발급받은_인증키_입력"
+    """)
+    st.stop()
