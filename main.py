@@ -15,7 +15,7 @@ URL = "https://www.kobis.or.kr/kobisopenapi/webservice/rest/boxoffice/searchDail
 KST = datetime.timezone(datetime.timedelta(hours=9))
 today_kst = datetime.datetime.now(KST).date()
 max_date = today_kst - datetime.timedelta(days=1)
-default_start = max_date - datetime.timedelta(days=6)  # 기본 7일간의 데이터
+default_start = max_date - datetime.timedelta(days=6)  # 기본 7일간 데이터
 
 
 @st.cache_data(ttl=3600)
@@ -29,7 +29,7 @@ def fetch_boxoffice(date_str):
 
 st.title("🎬 박스오피스 분석 Dashboard")
 
-# 1. 기간 선택 (날짜 범위 지정)
+# 1. 기간 선택 (날짜 범위 지정 - 어제까지만 선택 가능)
 date_range = st.date_input(
     "조회할 기간을 선택하세요 (시작일 ~ 종료일)",
     value=(default_start, max_date),
@@ -37,7 +37,7 @@ date_range = st.date_input(
     help="오늘 날짜는 집계 전이므로 어제 날짜까지만 선택 가능합니다."
 )
 
-# 날짜가 범위로 제대로 선택되었는지 확인
+# 날짜가 범위(시작일, 종료일)로 모두 선택되었는지 확인
 if isinstance(date_range, tuple) and len(date_range) == 2:
     start_date, end_date = date_range
 else:
@@ -72,7 +72,7 @@ for idx, dt in enumerate(date_list):
 progress_bar.empty()
 
 if not all_data:
-    st.warning("선택한 기간에는 아직 집계된 데이터가 없습니다.")
+    st.warning("그날은 아직 집계 전입니다.")
     st.stop()
 
 df = pd.DataFrame(all_data)
@@ -81,7 +81,7 @@ df = pd.DataFrame(all_data)
 for col in ["rank", "rankInten", "audiCnt", "audiAcc", "scrnCnt"]:
     df[col] = pd.to_numeric(df[col])
 
-# 순위 변동 / 100만 이모지 포맷팅 함수
+# 순위 변동 / 100만 이상 이모지 포맷팅 함수
 def format_rank_inten(row):
     if row.get("rankOldAndNew") == "NEW":
         return "NEW"
@@ -103,7 +103,7 @@ df["순위변동"] = df.apply(format_rank_inten, axis=1)
 df["표시_영화명"] = df.apply(format_movie_name, axis=1)
 
 # ==========================================
-# 📌 선택한 기간의 마지막 날 기준 현황 (상단)
+# 📌 선택한 기간의 마지막 날 기준 현황 & 표
 # ==========================================
 latest_date_str = end_date.strftime("%Y-%m-%d")
 latest_df = df[df["targetDt"] == latest_date_str]
@@ -122,43 +122,101 @@ if not latest_df.empty:
     st.dataframe(table, hide_index=True, use_container_width=True)
 
 # ==========================================
-# 📊 차트 섹션
+# 📊 그래프 시각화 섹션
 # ==========================================
 st.divider()
-st.header("📊 기간 종합 분석")
+st.header("📊 그래프 시각화")
 
-# 4번째 그래프: 기간 내 일관객수 합계 TOP 10 (가로 막대그래프)
-st.subheader("🏆 선택 기간 총 관객수 TOP 10")
+col1, col2 = st.columns(2)
 
-# 영화별 기간 내 총 관객수 및 10위권 진입 일수 집계
-period_summary = df.groupby("movieNm").agg(
-    total_audiCnt=("audiCnt", "sum"),
-    days_in_top10=("rank", "count")
-).reset_index()
+# ------------------------------------------
+# 1️⃣ 그래프: 조회 마지막 날 관객수 상위 5편
+# ------------------------------------------
+with col1:
+    st.subheader(f"📊 {latest_date_str} 관객수 상위 5편")
+    if not latest_df.empty:
+        top5_latest = latest_df.sort_values("audiCnt", ascending=False).head(5)
+        fig1 = px.bar(
+            top5_latest,
+            x="movieNm",
+            y="audiCnt",
+            labels={"movieNm": "영화명", "audiCnt": "당일 관객수"},
+            text_auto=",.0f"
+        )
+        st.plotly_chart(fig1, use_container_width=True)
 
-# 관객수 기준 TOP 10 추출 (오름차순 정렬해 두어야 가로 막대에서 큰 값이 위에 위치함)
-top10_period = period_summary.sort_values("total_audiCnt", ascending=True).tail(10)
+# ------------------------------------------
+# 2️⃣ 그래프: 주요 영화 일별 관객수 추이
+# ------------------------------------------
+with col2:
+    st.subheader("📈 기간 내 일별 관객수 추이 (상위 5편)")
+    # 기간 내 총 관객수가 많은 상위 5개 영화 선택
+    top5_movies = df.groupby("movieNm")["audiCnt"].sum().nlargest(5).index
+    df_top5_trend = df[df["movieNm"].isin(top5_movies)]
+    
+    fig2 = px.line(
+        df_top5_trend,
+        x="targetDt",
+        y="audiCnt",
+        color="movieNm",
+        labels={"targetDt": "날짜", "audiCnt": "일별 관객수", "movieNm": "영화명"},
+        markers=True
+    )
+    st.plotly_chart(fig2, use_container_width=True)
 
-fig_top10 = px.bar(
-    top10_period,
-    x="total_audiCnt",
-    y="movieNm",
-    orientation="h",
-    labels={
-        "total_audiCnt": "기간 총 관객수 (명)",
-        "movieNm": "영화명",
-        "days_in_top10": "10위권 진입 일수"
-    },
-    hover_data={
-        "total_audiCnt": ":,명",
-        "days_in_top10": ":일"
-    },
-    text_auto=",.0f"
-)
+col3, col4 = st.columns(2)
 
-# 관객수 많은 영화가 위에 오도록 Y축 범주 순서 고정
-fig_top10.update_layout(
-    yaxis={"categoryorder": "array", "categoryarray": top10_period["movieNm"].tolist()}
-)
+# ------------------------------------------
+# 3️⃣ 그래프: 관객수 vs 스크린수 관계 (점그래프)
+# ------------------------------------------
+with col3:
+    st.subheader("🎯 스크린수 대비 관객수 분포")
+    fig3 = px.scatter(
+        latest_df,
+        x="scrnCnt",
+        y="audiCnt",
+        color="movieNm",
+        size="audiAcc",
+        hover_name="movieNm",
+        labels={"scrnCnt": "스크린수", "audiCnt": "당일 관객수", "movieNm": "영화명", "audiAcc": "누적 관객수"}
+    )
+    st.plotly_chart(fig3, use_container_width=True)
 
-st.plotly_chart(fig_top10, use_container_width=True)
+# ------------------------------------------
+# 4️⃣ 그래프: 기간 내 총 관객수 TOP 10 (가로 막대그래프)
+# ------------------------------------------
+with col4:
+    st.subheader("🏆 선택 기간 총 관객수 TOP 10")
+
+    # 영화별 기간 내 총 관객수 및 10위권 진입 일수 집계
+    period_summary = df.groupby("movieNm").agg(
+        total_audiCnt=("audiCnt", "sum"),
+        days_in_top10=("rank", "count")
+    ).reset_index()
+
+    # 관객수 기준 TOP 10 추출 (오름차순 정렬 - 가로 막대 시 큰 값이 위에 배치됨)
+    top10_period = period_summary.sort_values("total_audiCnt", ascending=True).tail(10)
+
+    fig4 = px.bar(
+        top10_period,
+        x="total_audiCnt",
+        y="movieNm",
+        orientation="h",
+        labels={
+            "total_audiCnt": "기간 총 관객수 (명)",
+            "movieNm": "영화명",
+            "days_in_top10": "10위권 진입 일수"
+        },
+        hover_data={
+            "total_audiCnt": ":,명",
+            "days_in_top10": ":일"
+        },
+        text_auto=",.0f"
+    )
+
+    # 관객수가 많은 영화가 맨 위에 배치되도록 Y축 순서 설정
+    fig4.update_layout(
+        yaxis={"categoryorder": "array", "categoryarray": top10_period["movieNm"].tolist()}
+    )
+
+    st.plotly_chart(fig4, use_container_width=True)
